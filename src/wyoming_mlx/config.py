@@ -32,6 +32,7 @@ class ModelsConfig(BaseModel):
     whisper: str = "large-v3-turbo"
     kokoro: str = "hexgrad/Kokoro-82M"
     kokoro_default_voice: str = "af_heart"
+    idle_unload_seconds: float = Field(default=60, ge=0)
 
 
 class WyomingConfig(BaseModel):

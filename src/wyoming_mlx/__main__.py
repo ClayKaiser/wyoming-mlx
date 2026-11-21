@@ -41,8 +41,7 @@ def _ensure_models_cached(kokoro_model_id: str) -> None:
     completely offline.  This function ensures the cache is populated at
     startup so the first TTS request doesn't block.
 
-    WhisperLiveKit downloads its model during eager backend initialisation,
-    so no pre-caching is needed for STT.
+    WhisperLiveKit downloads its model on the first transcription request.
 
     If the model is already cached (we check via a marker file), this is
     a no-op.
@@ -287,8 +286,15 @@ def main(argv: list[str] | None = None) -> None:
     # Ensure model weights are cached locally before backends initialize.
     _ensure_models_cached(cfg.models.kokoro)
 
-    stt_backend = WhisperLiveKitBackend(model=cfg.models.whisper)
-    tts_backend = KokoroBackend(model_id=cfg.models.kokoro, voice=cfg.models.kokoro_default_voice)
+    stt_backend = WhisperLiveKitBackend(
+        model=cfg.models.whisper,
+        idle_unload_seconds=cfg.models.idle_unload_seconds,
+    )
+    tts_backend = KokoroBackend(
+        model_id=cfg.models.kokoro,
+        voice=cfg.models.kokoro_default_voice,
+        idle_unload_seconds=cfg.models.idle_unload_seconds,
+    )
 
     # Suppress misaki's leaked semaphore warning at shutdown (multiprocessing
     # resource tracker retains a semaphore that is never closed).

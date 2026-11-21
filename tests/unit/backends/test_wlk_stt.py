@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import wyoming_mlx.backends.wlk_stt as wlk_stt
 from wyoming_mlx.backends.wlk_stt import (
     WHISPER_SAMPLE_RATE,
     WhisperLiveKitBackend,
@@ -136,3 +138,90 @@ async def test_updates_raises_on_error_status():
     with pytest.raises(RuntimeError, match="boom"):
         async for _ in session.updates():
             pass
+
+
+async def test_backend_loads_on_demand_and_unloads_after_idle(monkeypatch: pytest.MonkeyPatch):
+    class FakeProcessor:
+        def __init__(self, *, transcription_engine: object) -> None:
+            self.engine = transcription_engine
+
+        async def cleanup(self) -> None:
+            pass
+
+    engines: list[object] = []
+
+    def create_engine(**_kwargs: object) -> object:
+        engine = object()
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(wlk_stt, "_WLK_AVAILABLE", True)
+    monkeypatch.setattr(wlk_stt, "_TranscriptionEngine", create_engine)
+    monkeypatch.setattr(wlk_stt, "_AudioProcessor", FakeProcessor)
+    monkeypatch.setattr(wlk_stt, "_release_mlx_memory", lambda: None)
+
+    backend = WhisperLiveKitBackend(idle_unload_seconds=0.01)
+    assert backend._engine is None
+
+    session = backend.start_session()
+    assert len(engines) == 1
+    await session.close()
+    await asyncio.sleep(0.03)
+    assert backend._engine is None
+
+    next_session = backend.start_session()
+    assert len(engines) == 2
+    await next_session.close()
+
+
+async def test_backend_keeps_engine_until_all_sessions_close(monkeypatch: pytest.MonkeyPatch):
+    class FakeProcessor:
+        def __init__(self, *, transcription_engine: object) -> None:
+            self.engine = transcription_engine
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(wlk_stt, "_WLK_AVAILABLE", True)
+    monkeypatch.setattr(wlk_stt, "_TranscriptionEngine", lambda **_kwargs: object())
+    monkeypatch.setattr(wlk_stt, "_AudioProcessor", FakeProcessor)
+    monkeypatch.setattr(wlk_stt, "_release_mlx_memory", lambda: None)
+
+    backend = WhisperLiveKitBackend(idle_unload_seconds=0.01)
+    first = backend.start_session()
+    second = backend.start_session()
+
+    await first.close()
+    await asyncio.sleep(0.03)
+    assert backend._engine is not None
+
+    await second.close()
+    await asyncio.sleep(0.03)
+    assert backend._engine is None
+
+
+async def test_new_session_cancels_pending_unload(monkeypatch: pytest.MonkeyPatch):
+    class FakeProcessor:
+        def __init__(self, *, transcription_engine: object) -> None:
+            self.engine = transcription_engine
+
+        async def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(wlk_stt, "_WLK_AVAILABLE", True)
+    monkeypatch.setattr(wlk_stt, "_TranscriptionEngine", lambda **_kwargs: object())
+    monkeypatch.setattr(wlk_stt, "_AudioProcessor", FakeProcessor)
+    monkeypatch.setattr(wlk_stt, "_release_mlx_memory", lambda: None)
+
+    backend = WhisperLiveKitBackend(idle_unload_seconds=0.05)
+    first = backend.start_session()
+    await first.close()
+    await asyncio.sleep(0.02)
+
+    second = backend.start_session()
+    await asyncio.sleep(0.04)
+    assert backend._engine is not None
+
+    await second.close()
+    await asyncio.sleep(0.06)
+    assert backend._engine is None

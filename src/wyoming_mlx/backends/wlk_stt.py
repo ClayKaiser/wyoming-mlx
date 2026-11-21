@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from math import gcd
 from typing import Any, cast
 
@@ -29,6 +31,15 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 WHISPER_SAMPLE_RATE = 16000
+
+
+def _release_mlx_memory() -> None:
+    gc.collect()
+    try:
+        import mlx.core as mx  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return
+    mx.clear_cache()
 
 
 def _resample_to_16k(pcm: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -74,29 +85,44 @@ def _delta(emitted: str, confirmed: str) -> str:
 class _WLKSession:
     """One utterance: wraps a WhisperLiveKit AudioProcessor."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: Any, on_close: Callable[[], None]) -> None:
         assert _AudioProcessor is not None
-        self._processor = _AudioProcessor(transcription_engine=engine)
+        self._processor: Any | None = _AudioProcessor(transcription_engine=engine)
         self._results: AsyncIterator[Any] | None = None
         self._emitted = ""
+        self._on_close = on_close
+        self._closed = False
 
     async def _ensure_started(self) -> AsyncIterator[Any]:
         if self._results is None:
+            if self._processor is None:
+                raise RuntimeError("STT session is closed")
             self._results = cast(AsyncIterator[Any], await self._processor.create_tasks())
         return self._results
 
     async def feed(self, audio: bytes, sample_rate: int) -> None:
         await self._ensure_started()
+        assert self._processor is not None
         await self._processor.process_audio(resample_pcm16(audio, sample_rate))
 
     async def finish(self) -> None:
         await self._ensure_started()
+        assert self._processor is not None
         # Empty message triggers WLK's flush + stop sequence; the results
         # generator terminates once all processing tasks finish.
         await self._processor.process_audio(None)
 
     async def close(self) -> None:
-        await self._processor.cleanup()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._processor is not None:
+                await self._processor.cleanup()
+        finally:
+            self._results = None
+            self._processor = None
+            self._on_close()
 
     async def updates(self) -> AsyncGenerator[STTUpdate, None]:
         results = await self._ensure_started()
@@ -119,12 +145,11 @@ class _WLKSession:
 class WhisperLiveKitBackend:
     """STT backend powered by WhisperLiveKit (SimulStreaming policy, MLX).
 
-    The TranscriptionEngine is a process-wide singleton holding the model;
-    it is created eagerly so startup fails fast if the model can't load.
-    Each session gets its own AudioProcessor and may run concurrently.
+    The TranscriptionEngine is shared by active sessions and unloaded after an
+    idle period. Each session gets its own AudioProcessor and may run concurrently.
     """
 
-    def __init__(self, model: str = "large-v3-turbo") -> None:
+    def __init__(self, model: str = "large-v3-turbo", idle_unload_seconds: float = 60) -> None:
         if "/" in model:
             raise ValueError(
                 f"model must be a WhisperLiveKit size name (e.g. 'large-v3-turbo'), "
@@ -132,14 +157,58 @@ class WhisperLiveKitBackend:
             )
         if not _WLK_AVAILABLE or _TranscriptionEngine is None:
             raise ImportError("whisperlivekit is required but not installed")
-        log.info("Loading WhisperLiveKit engine (model=%s) …", model)
-        self._engine = _TranscriptionEngine(
-            model_size=model,
-            backend="mlx-whisper",
-            backend_policy="simulstreaming",
-            pcm_input=True,
+        if idle_unload_seconds < 0:
+            raise ValueError("idle_unload_seconds must be non-negative")
+        self._model = model
+        self._idle_unload_seconds = idle_unload_seconds
+        self._engine: Any | None = None
+        self._active_sessions = 0
+        self._unload_handle: asyncio.TimerHandle | None = None
+
+    def _load_engine(self) -> Any:
+        if self._engine is None:
+            log.info("Loading WhisperLiveKit engine (model=%s) …", self._model)
+            assert _TranscriptionEngine is not None
+            self._engine = _TranscriptionEngine(
+                model_size=self._model,
+                backend="mlx-whisper",
+                backend_policy="simulstreaming",
+                pcm_input=True,
+            )
+            log.info("[STT] WhisperLiveKit engine ready")
+        return self._engine
+
+    def _cancel_unload(self) -> None:
+        if self._unload_handle is not None:
+            self._unload_handle.cancel()
+            self._unload_handle = None
+
+    def _session_closed(self) -> None:
+        self._active_sessions -= 1
+        if self._active_sessions == 0:
+            self._schedule_unload()
+
+    def _schedule_unload(self) -> None:
+        self._unload_handle = asyncio.get_running_loop().call_later(
+            self._idle_unload_seconds, self._unload_engine
         )
-        log.info("[STT] WhisperLiveKit engine ready")
+
+    def _unload_engine(self) -> None:
+        self._unload_handle = None
+        if self._active_sessions or self._engine is None:
+            return
+        log.info("[STT] Unloading WhisperLiveKit engine after idle timeout")
+        self._engine = None
+        _release_mlx_memory()
 
     def start_session(self) -> _WLKSession:
-        return _WLKSession(self._engine)
+        self._cancel_unload()
+        engine = self._load_engine()
+        try:
+            session = _WLKSession(engine, self._session_closed)
+        except Exception:
+            if self._active_sessions == 0:
+                self._schedule_unload()
+            raise
+        self._active_sessions += 1
+        return session

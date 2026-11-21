@@ -89,12 +89,16 @@ uv run wyoming-mlx
 
 By default it loads:
 - whisper-large-v3-turbo (MLX, streaming) on Wyoming port 10300 / HTTP `/v1/audio/transcriptions`
-- Kokoro-82M (MLX) on Wyoming port 10200 / HTTP `/v1/audio/speech`
+- Kokoro-82M (PyTorch MPS) on Wyoming port 10200 / HTTP `/v1/audio/speech`
 - HTTP on port 10400 with API-key auth
 
-Models are stored in the Hugging Face cache. The STT model is loaded at
-startup (so a bad model name or download failure surfaces immediately); the
-Kokoro TTS model downloads on first synthesis.
+Models are stored in the Hugging Face cache and loaded on the first request.
+Each model unloads 60 seconds after its last request, and its accelerator
+cache is released. Set
+`WYOMING_MLX_MODELS__IDLE_UNLOAD_SECONDS` (or `models.idle_unload_seconds` in
+TOML) to change the delay; `0` unloads as soon as the current request finishes.
+Unloading reduces idle memory at the cost of model-load latency on the next
+request.
 
 ### API keys
 

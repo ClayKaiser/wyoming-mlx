@@ -40,8 +40,10 @@ def test_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("[http]\nport = 12222\n")
     monkeypatch.setenv("WYOMING_MLX_HTTP__PORT", "13333")
+    monkeypatch.setenv("WYOMING_MLX_MODELS__IDLE_UNLOAD_SECONDS", "0")
     cfg = load_config(config_path=cfg_file)
     assert cfg.http.port == 13333
+    assert cfg.models.idle_unload_seconds == 0
 
 
 def test_malformed_toml_raises(tmp_path: Path):
