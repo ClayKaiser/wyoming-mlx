@@ -30,7 +30,7 @@ def _env_overrides(prefix: str, delimiter: str = "__") -> dict:
 
 class ModelsConfig(BaseModel):
     whisper: str = "large-v3-turbo"
-    kokoro: str = "hexgrad/Kokoro-82M"
+    kokoro: str = "mlx-community/Kokoro-82M-bf16"
     kokoro_default_voice: str = "af_heart"
     idle_unload_seconds: float = Field(default=60, ge=0)
 

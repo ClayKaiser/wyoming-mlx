@@ -13,11 +13,11 @@ async def test_tts_streaming_stt_roundtrip():
     behaviour (at least one confirmed partial arrives before the final).
     """
     pytest.importorskip("whisperlivekit")
-    pytest.importorskip("kokoro")
+    pytest.importorskip("mlx_audio")
 
     from wyoming_mlx.backends.wlk_stt import WhisperLiveKitBackend
 
-    tts = KokoroBackend(model_id="hexgrad/Kokoro-82M", voice="af_heart")
+    tts = KokoroBackend(model_id="mlx-community/Kokoro-82M-bf16", voice="af_heart")
     stt = WhisperLiveKitBackend()
 
     text = "The quick brown fox jumps over the lazy dog"

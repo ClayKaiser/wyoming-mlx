@@ -1,39 +1,34 @@
-"""Kokoro TTS backend using PyTorch MPS on Apple Silicon."""
+"""Kokoro TTS backend using MLX-Audio on Apple Silicon."""
 
 from __future__ import annotations
 
 import asyncio
 import gc
-import io
 import logging
-import warnings
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import suppress
+from typing import Any
 
 import numpy as np
 
-_kokoro_ok = False
-try:
-    from kokoro import KPipeline as _KPipeline  # type: ignore[import-not-found, unused-ignore]
-
-    _kokoro_ok = True
-except ImportError:
-    _KPipeline = None  # type: ignore[assignment,misc]
+_load_model: Callable[..., Any] | None = None
+with suppress(ImportError):
+    from mlx_audio.tts.utils import load_model as _load_model
 
 log = logging.getLogger(__name__)
 
 
-def _release_torch_memory() -> None:
+def _release_mlx_memory() -> None:
     gc.collect()
     try:
-        import torch  # pyright: ignore[reportMissingImports]
+        import mlx.core as mx  # pyright: ignore[reportMissingImports]
     except ImportError:
         return
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
+    mx.clear_cache()
 
 
 class KokoroBackend:
-    """TTS backend powered by Kokoro-82M via PyTorch MPS."""
+    """TTS backend powered by Kokoro-82M via MLX-Audio."""
 
     def __init__(
         self,
@@ -41,8 +36,8 @@ class KokoroBackend:
         voice: str = "af_heart",
         idle_unload_seconds: float = 60,
     ) -> None:
-        if not _kokoro_ok:
-            raise ImportError("kokoro is required for KokoroBackend")
+        if _load_model is None:
+            raise ImportError("mlx-audio is required for KokoroBackend")
         if idle_unload_seconds < 0:
             raise ValueError("idle_unload_seconds must be non-negative")
         self._voice = voice
@@ -114,15 +109,17 @@ class KokoroBackend:
             "pm_alex",
             "pm_santa",
         ]
-        self._pipeline: object = None
+        self._model: Any | None = None
         self._lock = asyncio.Lock()
         self._unload_handle: asyncio.TimerHandle | None = None
 
-    def _ensure_pipeline(self) -> object:
-        if self._pipeline is None:
-            assert _KPipeline is not None, "kokoro is not installed"
-            self._pipeline = _KPipeline(lang_code="a", repo_id=self._model_id, device="mps")
-        return self._pipeline
+    def _ensure_model(self) -> Any:
+        if self._model is None:
+            if _load_model is None:
+                raise ImportError("mlx-audio is required for KokoroBackend")
+            log.info("Loading Kokoro MLX model (model=%s) …", self._model_id)
+            self._model = _load_model(self._model_id)
+        return self._model
 
     def _cancel_unload(self) -> None:
         if self._unload_handle is not None:
@@ -131,34 +128,27 @@ class KokoroBackend:
 
     def _schedule_unload(self) -> None:
         self._unload_handle = asyncio.get_running_loop().call_later(
-            self._idle_unload_seconds, self._unload_pipeline
+            self._idle_unload_seconds, self._unload_model
         )
 
-    def _unload_pipeline(self) -> None:
+    def _unload_model(self) -> None:
         self._unload_handle = None
-        if self._pipeline is None:
+        if self._model is None:
             return
-        log.info("[TTS] Unloading Kokoro pipeline after idle timeout")
-        self._pipeline = None
-        _release_torch_memory()
+        log.info("[TTS] Unloading Kokoro MLX model after idle timeout")
+        self._model = None
+        _release_mlx_memory()
 
     def _synthesize_locked(self, text: str, voice: str) -> bytes:
-        pipeline = self._ensure_pipeline()
-        generator = pipeline(text, voice=voice)  # pyright: ignore
-        buf = io.BytesIO()
-        # Suppress Kokoro internal STFT resize warnings (PyTorch bug with
-        # empty/half-empty harmonic source tensors — harmless, ignored).
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*was resized since it had shape.*")
-            for result in generator:
-                audio = result.audio
-                assert audio is not None
-                if audio.numel() == 0:
-                    continue
-                arr = audio.detach().cpu().numpy().astype(np.float32)
-                pcm = (arr * 32767).astype(np.int16).tobytes()
-                buf.write(pcm)
-        return buf.getvalue()
+        model = self._ensure_model()
+        results: Iterator[Any] = model.generate(text, voice=voice, lang_code=voice[0])
+        pcm_chunks: list[bytes] = []
+        for result in results:
+            audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                continue
+            pcm_chunks.append((np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+        return b"".join(pcm_chunks)
 
     async def synthesize(self, text: str, voice: str | None = None) -> AsyncGenerator[bytes, None]:
         v = voice or self._voice
@@ -172,7 +162,6 @@ class KokoroBackend:
                 data = self._synthesize_locked(text, v)
             finally:
                 self._schedule_unload()
-        # Yield in chunks
         chunk_size = 4096
         for i in range(0, len(data), chunk_size):
             yield data[i : i + chunk_size]

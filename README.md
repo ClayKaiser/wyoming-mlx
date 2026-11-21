@@ -25,7 +25,7 @@ turns it into a fast, fully local speech-to-text and text-to-speech service:
 
 Speech-to-text streams through [WhisperLiveKit](https://github.com/collabora/WhisperLiveKit)'s
 SimulStreaming (AlignAtt) policy on MLX, so partial transcripts arrive while
-you're still speaking; text-to-speech runs Kokoro on Metal via PyTorch. The
+you're still speaking; text-to-speech runs Kokoro through MLX-Audio. The
 real backends therefore require an Apple Silicon Mac. Everything else (config,
 HTTP API, Wyoming protocol handling, fake backends, tests) is portable, and
 CI runs on Linux against the fake backends.
@@ -89,7 +89,7 @@ uv run wyoming-mlx
 
 By default it loads:
 - whisper-large-v3-turbo (MLX, streaming) on Wyoming port 10300 / HTTP `/v1/audio/transcriptions`
-- Kokoro-82M (PyTorch MPS) on Wyoming port 10200 / HTTP `/v1/audio/speech`
+- Kokoro-82M (MLX-Audio) on Wyoming port 10200 / HTTP `/v1/audio/speech`
 - HTTP on port 10400 with API-key auth
 
 Models are stored in the Hugging Face cache and loaded on the first request.

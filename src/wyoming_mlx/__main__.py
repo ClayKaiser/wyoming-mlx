@@ -34,12 +34,10 @@ log = logging.getLogger(__name__)
 
 
 def _ensure_models_cached(kokoro_model_id: str) -> None:
-    """One-time lazy download of the Kokoro TTS model at startup.
+    """One-time prefetch of the Kokoro MLX model at startup.
 
-    huggingface_hub contacts the HF API to resolve revision tags on every
-    call, but once files are in the local cache subsequent loads are
-    completely offline.  This function ensures the cache is populated at
-    startup so the first TTS request doesn't block.
+    The model weights are cached on disk at startup so the first TTS request
+    does not block on downloading them. The model itself is loaded on demand.
 
     WhisperLiveKit downloads its model on the first transcription request.
 
@@ -60,37 +58,19 @@ def _ensure_models_cached(kokoro_model_id: str) -> None:
 
     log.info("Checking HuggingFace model cache …")
 
-    def _download() -> None:
-        from huggingface_hub import hf_hub_download
+    try:
+        from mlx_audio.utils import get_model_path
 
-        # Kokoro model.
-        try:
-            hf_hub_download(
-                kokoro_model_id,
-                "config.json",
-                cache_dir=str(hf_home),
-            )
-            # Determine the model file name from KModel.MODEL_NAMES.
-            try:
-                from kokoro.model import KModel
-
-                model_file = KModel.MODEL_NAMES.get(kokoro_model_id, "kokoro-v1_0.pth")
-            except ImportError:
-                model_file = "kokoro-v1_0.pth"
-            hf_hub_download(
-                kokoro_model_id,
-                model_file,
-                cache_dir=str(hf_home),
-            )
-            log.info("Kokoro model cached.")
-        except Exception:
-            log.warning("Failed to cache Kokoro model (will download on first use).")
+        get_model_path(kokoro_model_id)
+    except Exception as exc:
+        log.warning("Could not prefetch Kokoro model; it will download on first use: %s", exc)
+        return
 
     try:
-        _download()
+        marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(cache_key)
-    except Exception:
-        log.warning("Model cache check failed — models will download lazily.")
+    except OSError as exc:
+        log.warning("Could not write model cache marker %s: %s", marker, exc)
 
 
 _PROJECT_URL = "https://github.com/rnorth/wyoming-mlx"
@@ -278,7 +258,7 @@ def main(argv: list[str] | None = None) -> None:
         from wyoming_mlx.backends.wlk_stt import WhisperLiveKitBackend
     except ImportError:
         log.error(
-            "MLX backends not available (mlx, whisperlivekit, kokoro packages missing). "
+            "MLX backends not available (mlx, whisperlivekit, or mlx-audio missing). "
             "Install the MLX dependencies to enable real models."
         )
         sys.exit(1)

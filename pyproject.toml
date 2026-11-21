@@ -26,7 +26,8 @@ dependencies = [
     "python-multipart>=0.0.29",
     # mlx comes in transitively via whisperlivekit[mlx-whisper] → mlx-whisper.
     "whisperlivekit[mlx-whisper]==0.2.22; sys_platform == 'darwin'",
-    "kokoro>=0.9.4",
+    "mlx-audio>=0.6.7; sys_platform == 'darwin'",
+    "misaki[en,ja,zh]>=0.9.4; sys_platform == 'darwin'",
     "torch",
 ]
 
