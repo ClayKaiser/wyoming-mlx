@@ -24,7 +24,7 @@ turns it into a fast, fully local speech-to-text and text-to-speech service:
   `brew services`, and models are fetched once into the Hugging Face cache.
 
 Speech-to-text streams through [WhisperLiveKit](https://github.com/collabora/WhisperLiveKit)'s
-SimulStreaming (AlignAtt) policy on MLX, so partial transcripts arrive while
+LocalAgreement policy with MLX Whisper, so partial transcripts arrive while
 you're still speaking; text-to-speech runs Kokoro through MLX-Audio. The
 real backends therefore require an Apple Silicon Mac. Everything else (config,
 HTTP API, Wyoming protocol handling, fake backends, tests) is portable, and

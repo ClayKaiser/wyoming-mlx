@@ -143,7 +143,7 @@ class _WLKSession:
 
 
 class WhisperLiveKitBackend:
-    """STT backend powered by WhisperLiveKit (SimulStreaming policy, MLX).
+    """STT backend powered by WhisperLiveKit LocalAgreement and MLX Whisper.
 
     The TranscriptionEngine is shared by active sessions and unloaded after an
     idle period. Each session gets its own AudioProcessor and may run concurrently.
@@ -172,7 +172,7 @@ class WhisperLiveKitBackend:
             self._engine = _TranscriptionEngine(
                 model_size=self._model,
                 backend="mlx-whisper",
-                backend_policy="simulstreaming",
+                backend_policy="localagreement",
                 pcm_input=True,
             )
             log.info("[STT] WhisperLiveKit engine ready")

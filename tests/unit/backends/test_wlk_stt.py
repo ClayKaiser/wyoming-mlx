@@ -149,10 +149,12 @@ async def test_backend_loads_on_demand_and_unloads_after_idle(monkeypatch: pytes
             pass
 
     engines: list[object] = []
+    engine_kwargs: list[dict[str, object]] = []
 
-    def create_engine(**_kwargs: object) -> object:
+    def create_engine(**kwargs: object) -> object:
         engine = object()
         engines.append(engine)
+        engine_kwargs.append(kwargs)
         return engine
 
     monkeypatch.setattr(wlk_stt, "_WLK_AVAILABLE", True)
@@ -165,6 +167,12 @@ async def test_backend_loads_on_demand_and_unloads_after_idle(monkeypatch: pytes
 
     session = backend.start_session()
     assert len(engines) == 1
+    assert engine_kwargs[0] == {
+        "model_size": "large-v3-turbo",
+        "backend": "mlx-whisper",
+        "backend_policy": "localagreement",
+        "pcm_input": True,
+    }
     await session.close()
     await asyncio.sleep(0.03)
     assert backend._engine is None
